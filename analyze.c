@@ -1,0 +1,236 @@
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/ioctl.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <linux/if.h>
+#include <net/ethernet.h>
+#include <netpacket/packet.h>
+#include <netinet/if_ether.h>
+#include <netinet/ip.h>
+#include <netinet/ip6.h>
+#include <netinet/icmp6.h>
+#include <netinet/tcp.h>
+#include <netinet/udp.h>
+#include "checksum.h"
+#include "print.h"
+
+#ifdef ETHERTYPE_IPV6
+#define ETHERTYPE_IPV6 0x86dd
+#endif
+
+int AnalyzeArp(__u_char *data,int size) {
+    __u_char *ptr;
+    int lest;
+    struct ether_arp *arp;
+
+    ptr=data;
+    lest=size;
+
+    if(lest<sizeof(struct ether_arp)) {
+        fprintf(stderr,"lest(%d)<sizeof(struct ether_arp)\n",lest);
+        return(-1);
+    }
+
+    arp=(struct ether_arp *)ptr;
+    ptr+=sizeof(struct ether_arp);
+    lest-=sizeof(struct ether_arp);
+
+    PrintArp(arp,stdout);
+
+    return(0);
+}
+
+int AnalyzeIcmp(__u_char *data,int size) {
+    __u_char *ptr;
+    int lest;
+    struct icmp *icmp;
+
+    ptr=data;
+    lest=size;
+
+    if(lest<sizeof(struct icmp)) {
+        fprintf(stderr,"lest(%d)<sizeof(struct icmp)\n",lest);
+        return(-1);
+    }
+
+    icmp=(struct icmp *)ptr;
+    ptr+=sizeof(struct icmp);
+    lest-=sizeof(struct icmp);
+    PrintIcmp(icmp,stdout);
+
+    return(0);
+
+}
+
+int AnalyzeIcmp6(__u_char *data,int size) {
+    __u_char *ptr;
+    int lest;
+    struct icmp6_hdr *icmp6;
+
+    ptr=data;
+    lest=size;
+
+    if(lest<sizeof(struct icmp6_hdr)) {
+        fprintf(stderr,"lest(%d)<sizeof(struct icmp6_hdr)\n",lest);
+        return(-1);
+    }
+
+    icmp6=(struct icmp6_hdr *)ptr;
+    ptr+=sizeof(struct icmp6_hdr);
+    lest-=sizeof(struct icmp6_hdr);
+
+    PrintIcmp6(icmp6,stdout);
+
+    return(0);
+
+}
+
+int AnalyzeTcp(__u_char data,int size) {
+    __u_char *ptr;
+    int size;
+    struct tcphdr *tcphdr;
+
+    if(lest<(struct  tcphdr)) {
+        fprintf(stderr,"lest(%d)<sizeof(struct tcphdr)\n",lest);
+        return(-1);
+    }
+
+    tcphdr=(struct tcphdr *)ptr;
+    ptr+=sizeof(struct tcphdr);
+    lest-=sizeof(struct tcphdr);
+
+    PrintTcp(tcphdr,stdout);
+
+    return(0);
+}
+
+int AnalyzeUdp(__u_char data,int size) {
+    __u_char *ptr;
+    int size;
+    struct udphdr *udphdr;
+
+    ptr=data;
+    lest=size;
+
+    if(lest<(struct  udphdr)) {
+        fprintf(stderr,"lest(%d)<sizeof(struct udphdr)\n",lest);
+        return(-1);
+    }
+
+    udphdr=(struct udphdr *)ptr;
+    ptr+=sizeof(struct udphdr);
+    size-=(struct udphdr);
+
+    PrintUdp(udphdr,stdout);
+
+    return(0);
+
+}
+
+int AnalyzeIp(__u_char *data,int size) {
+    __u_char *ptr;
+    int size;
+    struct iphdr *iphdr;
+    __u_char *option
+    int optionLen,len;
+    __u_short sum;
+
+    ptr=data;
+    lest=size;
+    if(lest<sizeof(struct iphdr)) {
+        fprintf(stderr,"lest(%d)<sizeof(struct iphdr)\n",lest);
+        return(-1);
+    }
+
+    iphdr=(struct iphdr *)ptr;
+    ptr+=sizeof(struct iphdr);
+    lest-=sizeof(struct iphdr);
+
+    optionLen=iphdr->ihl*4-sizof(struct iphdr);
+    if(optionLen>0) {
+        if(optionLen >= 1500) {
+            fprintf(stderr,"IP optionLen(%d):too big\n",optionLen);
+            return(-1);
+        }
+
+        option=ptr;
+        ptr+=optionLen;
+        lest-=optionLen;
+
+    }
+
+    if(checkIPchecksum(iphdr,option,optionLen) == 0) {
+        fprintf(stderr,"bad ip checksum\n");
+        return(-1);
+    }
+
+    PrintIpHeader(iphdr,option,optionLen,stdout);
+
+    if(iphdr->protocol == IPPROTO_ICMP) {
+        len=ntohs(iphdr->tot_len)-iphdr->ihl*4;
+        sum=checksum(ptr,len);
+        if(sum != 0 && sum != 0xFFFF) {
+            fprintf(stderr,"bad icmp checksum\n");
+            return(-1);
+        }
+
+        AnalyzeIcmp(ptr,lest);
+    }else if(iphdr->protocol == IPPROTO_TCP) {
+        len=ntohs(iphdr->tot_len) - iphdr->ihl*4;
+        if(checkIPDATAchecksum(iphdr,ptr,len) == 0) {
+            fprintf(stderr,"bad tcp checksum\n");
+            return(-1);
+        }
+        AnalyzeTcp(ptr,lest);
+    }else if(iphdr->protocol == IPPROTO_UDP) {
+        struct udphdr *udphdr;
+        udphdr = (struct udphdr *)ptr;
+        len=ntohs(iphdr->tot_len) - iphdr->ihl*4;
+        if(udphdr->check != 0 && checkIPDATAchecksum(iphdr,ptr,len) == 0) {
+            fprintf(stderr,"bad udp checksum\n");
+            return(-1);
+        }
+
+        AnalayzeUdp(ptr,lest);
+    }
+    return(0);
+}
+
+int AnalyzeIpv6(__u_char *data,int size) {
+    __u_char *ptr;
+    int lest;
+    struct ip6_hdr *ip6;
+    int len;
+
+    ptr=data;
+    lest=size;
+
+    if(lest<sizeof(struct ipv6_hdr)) {
+        fprintf(stderr,"lest(%d)<sizeof(struct iphdr)\n",lest);
+        return(-1);
+    }
+
+    ip6=(struct ip6_hdr *)ptr;
+    ptr+=sizeof(struct ip6_hdr);
+    lest-=sizeof(struct ip6_hdr);
+
+    PrintIp6Header(ip6,stdout);
+
+    if(ip6->ip6_nxt == IPPROTO_ICMPV6) {
+        len=ntohs(ip6->ip6_plen);
+        if(checkIP6DATAchecksum(ip6,ptr,len) == 0) {
+            fprintf(stderr,"bad icmp6 checksum\n"):
+            return(-1);
+        }
+        AnalyzeIcmp6(ptr,lest);
+    }else if(ip6->ip6_nxt == IPPROTO_TCP) {
+        len = ntohs(ip6->ip6_plen);
+        if(checkIP6DATAchecksum(ip6,ptr,len) == 0) {
+            fprintf(stderr,"bad tcp6 checksum\n");
+            return(-1);
+        }   
+        AnalyzeTcp(ptr,lest);
+    }
+}
